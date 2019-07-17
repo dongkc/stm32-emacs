@@ -77,19 +77,38 @@
   :group 'stm32
   :type 'string)
 
-(defcustom stm32-template-files `("CubeMX2_cmake.py"
-				  "CMakeLists.txt"
-				  "CMakeSetCompiler.cmake"
-				  "CMakeIgnore.txt")
-  "Name of script for generating makefiles."
-  :group 'stm32
-  :type 'string)
+(defun stm32-run-st-util ()
+  "Run st-util gdb server."
+  (interactive)
+  (let ((p (get-buffer-process "*st-util*")))
+    (when p
+      (if (y-or-n-p "Kill currently running st-util? ")
+	  (interrupt-process p)
+	(user-error "St-util already running!"))))
+  
+  (sleep-for 1) ;wait for st-util being killed
+  
+  (with-temp-buffer "*st-util*"
+		    (async-shell-command stm32-st-util-command
+					 "*st-util*"
+					 "*Messages*")
+		    ))
 
-(defcustom stm32-template (concat user-emacs-directory
-				  "stm32/STM32CubeMX_cmake/")
-  "Directory with scripts for generating makefiles."
-  :group 'stm32
-  :type 'string)
+(defun stm32-start-gdb ()
+  "Strart gud arm-none-eabi-gdb and connect to st-util."
+  (interactive)
+  (let ((dir (stm32-get-project-build-dir))
+	(name (stm32-get-project-name))
+	(p (get-buffer-process "*st-util*")))
+    (when (not p)
+      (stm32-run-st-util))
+    (when dir
+      (let ((pth (concat dir "/" name ".elf")))
+	(when (file-exists-p pth)
+	  (progn
+	    (message pth)
+	    (gdb (concat stm32-gdb-start pth))))))))
+
 
 (defcustom stm32-gdb-start
   "arm-none-eabi-gdb -iex \"target extended-remote localhost:4242\" -i=mi "
@@ -97,88 +116,21 @@
   :group 'stm32
   :type 'string)
 
-(defcustom stm32-cubemx
-  "~/STM32CubeMX/STM32CubeMX"
-  "Path to stm32CubeMx binary."
-  :group 'stm32
-  :type 'string)
-
-(defcustom stm32-template-project
-  "((nil . ((cmake-ide-dir . \"build\"))))"
-  
-  "Template project.el for generation project.el."
-  :group 'stm32
-  :type 'string)
-
-(defcustom stm32-vfpcc-fix-fix
-  "//fix of vfpcc register in old versions of cmsis
-#define __get_FPSCR __builtin_arm_get_fpscr
-#define __set_FPSCR __builtin_arm_set_fpscr"
-  "Fix of vfpcc register in old versions of cmsis.  In cmsis_gcc.h."
-  :group 'stm32
-  :type 'string)
-
-(defcustom stm32-vfpcc-fix-source
-  (concat "/**\n"
-          "  \\brief   Get FPSCR\n"
-          "  \\details Returns the current value of the Floating Point Status/Control register.\n"
-          "  \\return               Floating Point Status/Control register value\n"
-          " */\n"
-          "__attribute__((always_inline)) __STATIC_INLINE uint32_t __get_FPSCR(void)\n"
-          "{\n"
-          "#if ((defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)) && \\\n"
-          "     (defined (__FPU_USED   ) && (__FPU_USED    == 1U))     )\n"
-          "  uint32_t result;\n"
-          "\n"
-          "  __ASM volatile (\"VMRS %0, fpscr\" : \"=r\" (result) );\n"
-          "  return(result);\n"
-          "#else\n"
-          "   return(0);\n"
-          "#endif\n"
-          "}\n"
-          "\n"
-          "\n"
-          "/**\n"
-          "  \\brief   Set FPSCR\n"
-          "  \\details Assigns the given value to the Floating Point Status/Control register.\n"
-          "  \\param [in]    fpscr  Floating Point Status/Control value to set\n"
-          " */\n"
-          "__attribute__( ( always_inline ) ) __STATIC_INLINE void __set_FPSCR(uint32_t fpscr)\n"
-          "{\n"
-          "#if ((defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)) && \\\n"
-          "     (defined (__FPU_USED   ) && (__FPU_USED    == 1U))     )\n"
-          "  __ASM volatile (\"VMSR fpscr, %0\" : : \"r\" (fpscr) : \"vfpcc\", \"memory\");\n"
-          "#else\n"
-          "  (void)fpscr;\n"
-          "#endif\n"
-          "}")
-  "Fix of vfpcc register in old versions of cmsis.  In cmsis_gcc.h."
-  :group 'stm32
-  :type 'string)
-
-(defcustom stm32-vfpcc-fix-path
-  "Drivers/CMSIS/Include/cmsis_gcc.h"
-  "Fix of vfpcc register in old versions of cmsis.  In cmsis_gcc.h."
-  :group 'stm32
-  :type 'string)
-
-
 (defcustom stm32-build-dir
-  "build"
-  "Directory for cmake build."
+  "BUILD/ARCH_MAX/GCC_ARM"
+  "Directory for mbed build."
   :group 'stm32
   :type 'string)
 
 (require 'cl-lib)
-(require 'cmake-ide)
 (require 'gdb-mi)
 (require 'gud)
 
 (defun stm32-get-project-root-dir ()
   "Return root path of current project."
-  (if (cide--locate-project-dir)
+  (if (ffip-get-project-root-directory)
       (let
-	  ((dir (cide--locate-project-dir)))
+	  ((dir (expand-file-name (ffip-get-project-root-directory))))
 	(if (file-exists-p dir)
 	    (progn (message (concat "Project dir: "
 				    dir))
@@ -186,7 +138,6 @@
 	  (progn
 	    (message "No root. Build directory must be /build/")
 	    (message dir))))))
-
 
 (defun stm32-get-project-build-dir ()
   "Return path to build dir of current project."
@@ -209,96 +160,6 @@
 	name)
     (message "Wrong root directory")))
 
-(defun stm32-generate-project (path)
-  "Generate .dir-locals.el for cmake-ide in PATH to build directory."
-  (when path
-    (let ((pth (concat path ".dir-locals.el")))
-      (when (file-exists-p pth)
-	(delete-file pth))
-      (with-temp-buffer
-	(insert stm32-template-project) ;(concat path stm32-build-dir))
-	(write-file pth)))))
-
-(defun stm32-cmake-build (&optional path)
-  "Execute cmake and create build directory if not exists.  Use existing project path's or use optional arg PATH."
-  (interactive)
-  (let ((dir (or path (stm32-get-project-build-dir))))
-    (when dir
-      (when (not (file-directory-p dir))
-	(make-directory dir))
-      (when (file-directory-p dir)
-	(message "cmake project...")
-	(message "and make...")
-	(compile
-	 (concat "cd " dir "; cmake ..; make;"))
-	(message "ok")))))
-
-(defun stm32-new-project ()
-  "Create new stm32  project from existing code."
-  (interactive)
-  (let* ((fil (read-directory-name "Select STM32CubeMx directory:"))
-	 (nam (car (last (s-split "/" fil) 2))))
-    (when (file-exists-p fil)
-      (when (y-or-n-p (concat "Create project " nam
-			      " in " fil "? "))
-	(progn
-	  (message (concat "copying " stm32-template))
-	  (dolist (x stm32-template-files)
-	    (copy-file (concat stm32-template x) (concat fil x) t)
-	    (message (concat "copied " (concat fil x))))
-	  (message "First build")
-	  (stm32-cmake-build (concat fil stm32-build-dir)) ;build
-	  (message "Generate project")
-	  (stm32-generate-project fil)
-	  (message "done")
-	  )))))
-
-(defun stm32-run-st-util ()
-  "Run st-util gdb server."
-  (interactive)
-  (let ((p (get-buffer-process "*st-util*")))
-    (when p
-      (if (y-or-n-p "Kill currently running st-util? ")
-	  (interrupt-process p)
-	(user-error "St-util already running!"))))
-  
-  (sleep-for 1) ;wait for st-util being killed
-  
-  (with-temp-buffer "*st-util*"
-		    
-		    (async-shell-command stm32-st-util-command
-					 "*st-util*"
-					 "*Messages*")
-		    ;;(pop-to-buffer "*st-util*")
-		    ))
-(defun stm32-start-gdb ()
-  "Strart gud arm-none-eabi-gdb and connect to st-util."
-  (interactive)
-  (let ((dir (stm32-get-project-build-dir))
-	(name (stm32-get-project-name))
-	(p (get-buffer-process "*st-util*")))
-    (when (not p)
-      (stm32-run-st-util))
-    (when dir
-      (let ((pth (concat dir "/" name ".elf")))
-	(when (file-exists-p pth)
-	  (progn
-	    (message pth)
-	    (gdb (concat stm32-gdb-start pth))))))))
-
-(defun stm32-open-cubemx ()
-  "Open current project in cubeMX or just start application."
-  (interactive)
-  (let* ((p (ignore-errors(stm32-get-project-root-dir)))
-	 (c stm32-cubemx))
-    (if p
-	(let* ((n (stm32-get-project-name))
-	       (f (concat p n ".ioc")))
-	  (if (file-exists-p f)
-	      (async-shell-command (concat c " " f))
-	    (async-shell-command c)))
-      (async-shell-command c))))
-
 (defun stm32-flash-to-mcu()
   "Upload compiled binary to stm32 through gdb."
   (interactive)
@@ -308,45 +169,6 @@
     (gdb-io-interrupt)
     (gud-basic-call "load")
     (gud-basic-call "cont")))
-
-(defun stm32-fix-vfpcc()
-  "Insert fix of vfpcc register in old versions of cmsis.  In cmsis_gcc.h.  Remove __set_FPSCR and __get_FPSCR functions."
-  (interactive)
-  (if (stm32-get-project-root-dir)
-      (let ((path (concat
-		   (stm32-get-project-root-dir)
-		   stm32-vfpcc-fix-path))
-            (fix-count 0))
-	(if (file-exists-p path)
-	    (progn
-              (message "Fixing old cmsis version")
-              (message (concat "cmsis gcc path: "
-			       path))
-              (with-temp-buffer
-                (insert-file-contents path)
-                (while (search-forward
-                        stm32-vfpcc-fix-source nil t)
-                  (progn
-                    (setq fix-count (+ fix-count 1))))
-                (if (not (eq fix-count 0))
-                    (progn (write-file (concat path ".bak"))
-                           (message "Backup saved."))))
-              (with-temp-buffer
-                (insert-file-contents path)
-                (setq fix-count 0)
-                (while (search-forward
-                        stm32-vfpcc-fix-source nil t)
-                  (progn
-                    (replace-match stm32-vfpcc-fix-fix)
-                    (setq fix-count (+ fix-count 1))
-                    (message "Found!")))
-                (if (not (eq fix-count 0))
-                    (progn
-                      (write-file path)
-                      (message
-                       "cmsis_gcc.h successfully fixed"))
-                  (message "cmsis_gcc.h already fixed."))))
-          (message "No cmsis_gcc.h")))))
 
 (defun stm32-kill-gdb()
   "Insert fix of vfpcc register in old versions of cmsis.  In cmsis_gcc.h.  Remove __set_FPSCR and __get_FPSCR functions."
