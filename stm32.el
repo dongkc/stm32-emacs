@@ -107,7 +107,7 @@
 	(when (file-exists-p pth)
 	  (progn
 	    (message pth)
-	    (gdb (concat stm32-gdb-start pth))))))))
+	    (gud-gdb (concat stm32-gdb-start pth))))))))
 
 
 (defcustom stm32-gdb-start
@@ -166,6 +166,7 @@
   (let ((p (get-buffer-process "*st-util*")))
     (when (not p)
       (stm32-start-gdb))
+    (sleep-for 4) ;wait for gdb being started
     (gdb-io-interrupt)
     (gud-basic-call "load")
     (gud-basic-call "cont")))
